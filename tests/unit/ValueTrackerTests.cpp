@@ -120,3 +120,71 @@ endmodule
   CHECK(test.pathExists("m.a", "m.out"));
   CHECK(test.pathExists("m.b", "m.out"));
 }
+
+TEST_CASE("Use-after-free when overwriting one half of a split interval "
+          "(nonblocking)",
+          "[ValueTracker]") {
+  // t <= 0 creates [0:31]; t[16] <= a splits it into [0:15] and [17:31],
+  // which shared one driver-list handle. t[31:16] <= d contains [16] and
+  // [17:31], so erasing [17:31] freed the handle while [0:15] still mapped
+  // to it, and the next use of [0:15] read a freed list (segfault).
+  auto const &tree = R"(
+module m (input logic clk, a, input logic [15:0] d, output logic [31:0] out);
+  logic [31:0] t;
+  always_ff @(posedge clk) begin
+    t <= 0;
+    t[16] <= a;
+    t[31:16] <= d;
+  end
+  assign out = t;
+endmodule
+)";
+  NetlistTest test(tree);
+  CHECK(test.pathExists("m.d", "m.out"));
+}
+
+TEST_CASE("Writing one half of a split interval leaves the other half's "
+          "drivers alone (replace)",
+          "[ValueTracker]") {
+  // The halves of a split interval must not share a driver list: replacing
+  // the drivers of [17:31] cleared and refilled the shared list, so a read of
+  // t[3:0] in [0:15] saw d's assignment instead of t = 0.
+  auto const &tree = R"(
+module m (input logic a, input logic [15:0] d, output logic [3:0] lo);
+  logic [31:0] t;
+  always_comb begin
+    t = 0;
+    t[16] = a;
+    t[31:17] = d[14:0];
+    lo = t[3:0];
+  end
+endmodule
+)";
+  NetlistTest test(tree);
+  CHECK_FALSE(test.pathExists("m.d", "m.lo"));
+  CHECK_FALSE(test.pathExists("m.a", "m.lo"));
+}
+
+TEST_CASE("Writing one half of a split interval leaves the other half's "
+          "drivers alone (merge)",
+          "[ValueTracker]") {
+  // Same as above, but the write sits in a branch, so the join merges it
+  // into the existing [17:31] list, which [0:15] shared.
+  auto const &tree = R"(
+module m (input logic a, c, input logic [15:0] d, output logic [3:0] lo,
+          output logic [14:0] hi);
+  logic [31:0] t;
+  always_comb begin
+    t = 0;
+    t[16] = a;
+    if (c)
+      t[31:17] = d[14:0];
+    lo = t[3:0];
+    hi = t[31:17];
+  end
+endmodule
+)";
+  NetlistTest test(tree);
+  CHECK_FALSE(test.pathExists("m.d", "m.lo"));
+  CHECK(test.pathExists("m.d", "m.hi"));
+}

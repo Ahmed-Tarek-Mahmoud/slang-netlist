@@ -186,10 +186,15 @@ void ValueTracker::addDrivers(ValueDrivers &drivers,
         DEBUG_PRINT("Split left {}\n", toString(newBounds));
       }
 
-      // Right part.
+      // Right part. When a left remainder exists it keeps the original
+      // handle, so give the right remainder its own copy of the list.
       if (itBounds.second > bounds.upper()) {
         auto newBounds = DriverBitRange{bounds.upper() + 1, itBounds.second};
-        driverMap.insert(newBounds, existingHandle, slotAlloc);
+        auto rightHandle = itBounds.first < bounds.lower()
+                               ? driverMap.addDriverList(
+                                     driverMap.getDriverList(existingHandle))
+                               : existingHandle;
+        driverMap.insert(newBounds, rightHandle, slotAlloc);
         DEBUG_PRINT("Split right {}\n", toString(newBounds));
       }
 
